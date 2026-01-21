@@ -1,0 +1,21 @@
+{
+  "name": "sales-nav-scraper",
+  "version": "0.1.0",
+  "description": "Sales Nav Scraper dashboard and API",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "set \"CHROME_BINARY=%CD%\\chrome-for-testing\\chrome-win64\\chrome.exe\" && node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "chromedriver": "^144.0.0",
+    "express": "^4.19.2",
+    "free-email-domains": "^1.2.23",
+    "selenium-webdriver": "^4.22.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
