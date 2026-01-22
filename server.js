@@ -3,7 +3,9 @@ const { port } = require("./config/env");
 const { ensureChrome } = require("./utils/downloadChrome");
 
 ensureChrome()
-  .then(() => {
+  .then(({ chromePath, driverPath }) => {
+    process.env.CHROME_BINARY = chromePath;
+    process.env.CHROMEDRIVER_BINARY = driverPath;
     app.listen(port, () => {
       console.log(`Server listening on ${port}`);
     });

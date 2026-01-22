@@ -1,4 +1,3 @@
-require("chromedriver");
 const fs = require("fs");
 const path = require("path");
 const { Builder } = require("selenium-webdriver");
@@ -43,7 +42,12 @@ const launchBrowser = () => {
   if (headless) {
     options.addArguments("--headless=new");
   }
-  return new Builder().forBrowser("chrome").setChromeOptions(options).build();
+  const builder = new Builder().forBrowser("chrome").setChromeOptions(options);
+  if (process.env.CHROMEDRIVER_BINARY) {
+    const service = new chrome.ServiceBuilder(process.env.CHROMEDRIVER_BINARY);
+    builder.setChromeService(service);
+  }
+  return builder.build();
 };
 
 module.exports = {

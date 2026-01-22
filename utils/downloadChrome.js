@@ -5,6 +5,7 @@ const unzipper = require("unzipper");
 
 const chromeRoot = path.join(__dirname, "..", "chrome-for-testing");
 const chromeExe = path.join(chromeRoot, "chrome-win64", "chrome.exe");
+const driverExe = path.join(chromeRoot, "chromedriver-win64", "chromedriver.exe");
 const downloadsIndexUrl =
   "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json";
 
@@ -64,8 +65,8 @@ const extractZip = (zipPath, destination) =>
   });
 
 const ensureChrome = async () => {
-  if (fs.existsSync(chromeExe)) {
-    return;
+  if (fs.existsSync(chromeExe) && fs.existsSync(driverExe)) {
+    return { chromePath: chromeExe, driverPath: driverExe };
   }
 
   fs.mkdirSync(chromeRoot, { recursive: true });
@@ -75,23 +76,46 @@ const ensureChrome = async () => {
   const win64Entry = stable?.downloads?.chrome?.find(
     (item) => item.platform === "win64"
   );
+  const win64DriverEntry = stable?.downloads?.chromedriver?.find(
+    (item) => item.platform === "win64"
+  );
 
   if (!win64Entry?.url) {
     throw new Error("Unable to resolve Chrome for Testing download URL.");
   }
+  if (!win64DriverEntry?.url) {
+    throw new Error("Unable to resolve ChromeDriver download URL.");
+  }
 
   const zipPath = path.join(chromeRoot, "chrome-win64.zip");
+  const driverZipPath = path.join(chromeRoot, "chromedriver-win64.zip");
 
-  console.log(
-    `Chrome binary missing. Downloading ${stable.version} for win64...`
-  );
-  await downloadFile(win64Entry.url, zipPath);
-  await extractZip(zipPath, chromeRoot);
-  fs.unlinkSync(zipPath);
+  if (!fs.existsSync(chromeExe)) {
+    console.log(
+      `Chrome binary missing. Downloading ${stable.version} for win64...`
+    );
+    await downloadFile(win64Entry.url, zipPath);
+    await extractZip(zipPath, chromeRoot);
+    fs.unlinkSync(zipPath);
+  }
+
+  if (!fs.existsSync(driverExe)) {
+    console.log(
+      `ChromeDriver missing. Downloading ${stable.version} for win64...`
+    );
+    await downloadFile(win64DriverEntry.url, driverZipPath);
+    await extractZip(driverZipPath, chromeRoot);
+    fs.unlinkSync(driverZipPath);
+  }
 
   if (!fs.existsSync(chromeExe)) {
     throw new Error("Chrome binary was downloaded but could not be found.");
   }
+  if (!fs.existsSync(driverExe)) {
+    throw new Error("ChromeDriver was downloaded but could not be found.");
+  }
+
+  return { chromePath: chromeExe, driverPath: driverExe };
 };
 
 module.exports = { ensureChrome };

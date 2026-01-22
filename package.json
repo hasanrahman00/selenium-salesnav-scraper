@@ -9,7 +9,6 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
-    "chromedriver": "^144.0.0",
     "express": "^4.19.2",
     "free-email-domains": "^1.2.23",
     "selenium-webdriver": "^4.22.0",
