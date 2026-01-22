@@ -13,6 +13,7 @@
     "express": "^4.19.2",
     "free-email-domains": "^1.2.23",
     "selenium-webdriver": "^4.22.0",
+    "unzipper": "^0.12.3",
     "uuid": "^9.0.1"
   },
   "devDependencies": {
