@@ -1,4 +1,5 @@
 const { By, until, waitForAnyVisible, waitForSalesNavReady } = require("../utils/dom");
+const { clickLushaBadge } = require("./actions");
 
 const withFrame = async (driver, frameEl, fn) => {
   await driver.switchTo().frame(frameEl);
@@ -61,17 +62,54 @@ const expandAllCards = async (driver) => {
   `);
 };
 
-const extractLushaContacts = async (driver, { timeoutMs = 20000, maxCards = 25 } = {}) => {
+const extractLushaContacts = async (
+  driver,
+  { timeoutMs = 20000, maxCards = 25, debug = true, retryOnTimeout = true } = {}
+) => {
+  const t0 = Date.now();
+  if (debug) {
+    console.log(`[lusha] start (timeout=${timeoutMs}ms, maxCards=${maxCards})`);
+  }
+  const tReadyStart = Date.now();
   await waitForSalesNavReady(driver, timeoutMs);
+  if (debug) {
+    console.log(`[lusha] waitForSalesNavReady ${Date.now() - tReadyStart}ms`);
+  }
 
   const run = async () => {
     const containerLocators = [
       By.css("[data-test-id='bulk-contact-container-with-data']"),
       By.css(".bulk-contact-profile-container"),
     ];
-    await waitForAnyVisible(driver, containerLocators, timeoutMs);
+    const tVisible = Date.now();
+    try {
+      await waitForAnyVisible(driver, containerLocators, timeoutMs);
+    } catch (error) {
+      if (retryOnTimeout) {
+        if (debug) {
+          console.log("[lusha] container not visible, retrying by clicking Lusha badge");
+        }
+        try {
+          await driver.switchTo().defaultContent();
+        } catch (switchError) {
+          // ignore
+        }
+        await clickLushaBadge(driver, Math.min(8000, timeoutMs));
+        await waitForAnyVisible(driver, containerLocators, timeoutMs);
+      } else {
+        throw error;
+      }
+    }
+    if (debug) {
+      console.log(`[lusha] waitForAnyVisible ${Date.now() - tVisible}ms`);
+    }
+    const tExpand = Date.now();
     await expandAllCards(driver);
     await driver.sleep(150);
+    if (debug) {
+      console.log(`[lusha] expandAllCards ${Date.now() - tExpand}ms`);
+    }
+    const tScript = Date.now();
     const raw = await driver.executeScript(`
       const cards = Array.from(document.querySelectorAll('.bulk-contact-profile-container'));
       return cards.slice(0, ${maxCards}).map((card) => {
@@ -86,8 +124,12 @@ const extractLushaContacts = async (driver, { timeoutMs = 20000, maxCards = 25 }
         return { fullName, companyName, domains };
       });
     `);
+    if (debug) {
+      console.log(`[lusha] executeScript ${Date.now() - tScript}ms`);
+    }
 
-    return raw.map((record) => {
+    const tMap = Date.now();
+    const mapped = raw.map((record) => {
       const { firstName, lastName } = splitName(record.fullName);
       const domains = [];
       for (const text of record.domains || []) {
@@ -107,13 +149,19 @@ const extractLushaContacts = async (driver, { timeoutMs = 20000, maxCards = 25 }
         domains,
       };
     });
+    if (debug) {
+      console.log(`[lusha] mapRecords ${Date.now() - tMap}ms`);
+    }
+    return mapped;
   };
 
   const lushaFrame = await getLushaFrame(driver);
-  if (lushaFrame) {
-    return withFrame(driver, lushaFrame, run);
+  const tFrame = Date.now();
+  const result = lushaFrame ? await withFrame(driver, lushaFrame, run) : await run();
+  if (debug) {
+    console.log(`[lusha] total ${Date.now() - t0}ms (frame=${lushaFrame ? "yes" : "no"}, switch=${Date.now() - tFrame}ms)`);
   }
-  return run();
+  return result;
 };
 
 module.exports = {

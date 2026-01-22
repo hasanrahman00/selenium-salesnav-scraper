@@ -33,12 +33,29 @@ const clickContactoutBadge = async (driver, options = {}) => {
   const perFrameWaitMs = Number(settings.perFrameWaitMs || 800);
   const minimizeWaitMs = Number(settings.minimizeWaitMs || 1500);
   const postMinimizeDelayMs = Number(settings.postMinimizeDelayMs || 600);
+  const maxFrames = Number(settings.maxFrames || 6);
 
   if (!skipReadyWait) {
     await waitForSalesNavReady(driver, timeoutMs);
   }
-  const currentUrl = await driver.getCurrentUrl();
-  console.log(`[extensions] Trying to click ContactOut on ${currentUrl}`);
+  // reduced logging: avoid verbose extension click messages
+
+  // Try fast script click in main document
+  try {
+    const fastClicked = await driver.executeScript(`
+      const el = document.querySelector('#floating-button, #app #floating-button, img[alt="contactout"]');
+      if (el) {
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        return true;
+      }
+      return false;
+    `);
+    if (fastClicked) {
+      return;
+    }
+  } catch (error) {
+    // ignore and fall back to selenium click
+  }
 
   // Try main document first
   try {
@@ -46,27 +63,16 @@ const clickContactoutBadge = async (driver, options = {}) => {
     await driver.executeScript("arguments[0].scrollIntoView({block:'center'});", el);
     await driver.wait(until.elementIsVisible(el), timeoutMs);
     await el.click();
-    console.log("[extensions] Clicked ContactOut in main document");
     return;
   } catch (error) {
     // fall through to iframe search
   }
 
   const frames = await driver.findElements(By.css("iframe"));
-  console.log(`[extensions] Found ${frames.length} iframes, scanning for ContactOut`);
-  for (const frame of frames) {
-    try {
-      const src = await frame.getAttribute("src");
-      const id = await frame.getAttribute("id");
-      const name = await frame.getAttribute("name");
-      console.log(`[extensions] iframe id=${id || ""} name=${name || ""} src=${src || ""}`);
-    } catch (error) {
-      // ignore logging errors
-    }
-  }
+  // skip iframe scan logging
 
   let lushaFrame = null;
-  for (const frame of frames) {
+  for (const frame of frames.slice(0, maxFrames)) {
     try {
       const id = await frame.getAttribute("id");
       if (id === "LU__extension_iframe") {
@@ -109,13 +115,12 @@ const clickContactoutBadge = async (driver, options = {}) => {
         await driver.wait(until.elementIsVisible(el), timeoutMs);
         await el.click();
       });
-      console.log("[extensions] Clicked ContactOut inside targeted iframe");
       return;
     } catch (error) {
       // ignore and continue
     }
   }
-  for (const frame of frames) {
+  for (const frame of frames.slice(0, maxFrames)) {
     try {
       await withFrame(driver, frame, async () => {
         const el = await findContactoutButton(driver, perFrameWaitMs);
@@ -123,7 +128,6 @@ const clickContactoutBadge = async (driver, options = {}) => {
         await driver.wait(until.elementIsVisible(el), timeoutMs);
         await el.click();
       });
-      console.log("[extensions] Clicked ContactOut inside iframe");
       return;
     } catch (error) {
       // ignore and continue

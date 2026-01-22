@@ -17,7 +17,7 @@ const waitForAnyVisible = async (driver, locators, timeoutMs) => {
     if (Date.now() - start > timeoutMs) {
       throw new Error("Timed out waiting for page content to be visible");
     }
-    await driver.sleep(300);
+    await driver.sleep(150);
   }
 };
 
@@ -60,20 +60,14 @@ const clickExtensionIcon = async (driver, name, timeoutMs = 15000) => {
   if (!locators.length) {
     throw new Error(`Unknown extension name: ${name}`);
   }
-  const currentUrl = await driver.getCurrentUrl();
-  console.log(`[extensions] Trying to click ${name} on ${currentUrl}`);
-  console.log(`[extensions] Locators: ${locators.map((l) => l.toString()).join(" | ")}`);
+  // reduced logging: avoid noisy locator details
   const el = await waitForAnyVisible(driver, locators, timeoutMs);
-  console.log(`[extensions] Found element for ${name}. Visible: ${await el.isDisplayed()}`);
   await driver.executeScript("arguments[0].scrollIntoView({block:'center'});", el);
   await driver.wait(until.elementIsVisible(el), timeoutMs);
   try {
     await el.click();
-    console.log(`[extensions] Clicked ${name} using element.click()`);
   } catch (error) {
-    console.log(`[extensions] element.click() failed for ${name}: ${error.message || error}`);
     await driver.executeScript("arguments[0].click();", el);
-    console.log(`[extensions] Clicked ${name} using JS click()`);
   }
 };
 

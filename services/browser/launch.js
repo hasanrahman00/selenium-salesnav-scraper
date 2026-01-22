@@ -24,7 +24,13 @@ const launchBrowser = () => {
     "--disable-session-crashed-bubble",
     "--disable-features=InfiniteSessionRestore",
     "--log-level=3",
-    "--start-maximized"
+    "--start-maximized",
+    "--disable-gpu",
+    "--use-gl=swiftshader",
+    "--use-angle=swiftshader",
+    "--disable-software-rasterizer",
+    "--disable-accelerated-2d-canvas",
+    "--disable-features=Vulkan,UseSkiaRenderer"
   );
   if (String(process.env.DEBUG_CHROME || "").toLowerCase() === "true") {
     options.addArguments("--enable-logging=stderr", "--v=1");

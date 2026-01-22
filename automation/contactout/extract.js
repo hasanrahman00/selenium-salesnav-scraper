@@ -36,14 +36,33 @@ const extractDomainsFromText = (text) => {
   return Array.from(new Set(filtered));
 };
 
-const extractContactoutData = async (driver, { timeoutMs = 30000 } = {}) => {
+const extractContactoutData = async (
+  driver,
+  {
+    timeoutMs = 30000,
+    debug = true,
+    minResults = 1,
+    retryDelayMs = 800,
+    maxRetries = 2,
+    expectedLeadKey = null,
+  } = {}
+) => {
+  const t0 = Date.now();
+  if (debug) {
+    console.log(`[contactout] start (timeout=${timeoutMs}ms)`);
+  }
   const run = async () => {
+    const tVisible = Date.now();
     await waitForAnyVisible(
       driver,
       [By.css("[data-testid='contact-information']")],
       timeoutMs
     );
+    if (debug) {
+      console.log(`[contactout] waitForAnyVisible ${Date.now() - tVisible}ms`);
+    }
 
+    const tScript = Date.now();
     const raw = await driver.executeScript(`
       const containers = Array.from(document.querySelectorAll('[data-testid="contact-information"]'));
       return containers.map((container) => {
@@ -56,8 +75,12 @@ const extractContactoutData = async (driver, { timeoutMs = 30000 } = {}) => {
         return { fullName, titleText, emails };
       });
     `);
+    if (debug) {
+      console.log(`[contactout] executeScript ${Date.now() - tScript}ms`);
+    }
 
-    return raw.map((record) => {
+    const tMap = Date.now();
+    const mapped = raw.map((record) => {
       const titleParts = String(record.titleText || "").split(" at ");
       const title = titleParts[0]?.trim() || "";
       const companyName = titleParts.slice(1).join(" at ").trim();
@@ -77,18 +100,65 @@ const extractContactoutData = async (driver, { timeoutMs = 30000 } = {}) => {
         domains: domains.slice(0, 2),
       };
     });
+    if (debug) {
+      console.log(`[contactout] mapRecords ${Date.now() - tMap}ms`);
+    }
+    return mapped;
+  };
+
+  const normalizeKey = (value) => String(value || "").toLowerCase();
+  const executeWithRetry = async (fn, frameLabel) => {
+    let attempt = 0;
+    let result = await fn();
+    const hasData = (list) =>
+      Array.isArray(list) &&
+      list.length >= minResults &&
+      list.some((item) => (item.fullName || '').trim() || (item.domains || []).length);
+    const matchesExpected = (list) => {
+      if (!expectedLeadKey) {
+        return true;
+      }
+      if (!Array.isArray(list) || !list.length) {
+        return false;
+      }
+      const first = list[0];
+      const name = normalizeKey(first.fullName || "");
+      const key = normalizeKey(expectedLeadKey);
+      return Boolean(name) && key.includes(name.split(" ")[0]);
+    };
+    while ((!hasData(result) || !matchesExpected(result)) && attempt < maxRetries) {
+      attempt += 1;
+      if (debug) {
+        console.log(`[contactout] retry ${attempt} (no data or mismatch)`);
+      }
+      await driver.sleep(retryDelayMs);
+      result = await fn();
+    }
+    if (debug) {
+      console.log(`[contactout] total ${Date.now() - t0}ms (frame=${frameLabel})`);
+    }
+    return result;
   };
 
   const frame = await getContactoutFrame(driver);
   if (frame) {
-    return withFrame(driver, frame, run);
+    const tFrame = Date.now();
+    const result = await executeWithRetry(() => withFrame(driver, frame, run), "yes");
+    if (debug) {
+      console.log(`[contactout] switch=${Date.now() - tFrame}ms`);
+    }
+    return result;
   }
 
   const frames = await driver.findElements(By.css("iframe"));
   for (const candidate of frames) {
     try {
-      const result = await withFrame(driver, candidate, run);
+      const tFrame = Date.now();
+      const result = await executeWithRetry(() => withFrame(driver, candidate, run), "scan");
       if (Array.isArray(result) && result.length) {
+        if (debug) {
+          console.log(`[contactout] switch=${Date.now() - tFrame}ms`);
+        }
         return result;
       }
     } catch (error) {
@@ -96,7 +166,7 @@ const extractContactoutData = async (driver, { timeoutMs = 30000 } = {}) => {
     }
   }
 
-  return run();
+  return executeWithRetry(run, "no");
 };
 
 module.exports = {

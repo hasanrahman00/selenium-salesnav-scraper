@@ -1,6 +1,8 @@
 const { By, waitForAnyVisible, waitForSalesNavReady, clickExtensionIcon, until } = require("../utils/dom");
 
-const clickLushaMinimize = async (driver, timeoutMs = 15000) => {
+const clickLushaMinimize = async (driver, options = {}) => {
+  const timeoutMs = Number(options.timeoutMs || 1500);
+  const preferFrame = options.preferFrame !== false;
   const locators = [
     By.css(".minimize-icon-container img[alt='Minimize']"),
     By.css(".minimize-icon-container"),
@@ -13,33 +15,33 @@ const clickLushaMinimize = async (driver, timeoutMs = 15000) => {
     await driver.wait(until.elementIsVisible(el), timeoutMs);
     try {
       await el.click();
-      console.log("[extensions] Clicked Lusha minimize using element.click()");
     } catch (error) {
-      console.log(`[extensions] Lusha minimize click failed: ${error.message || error}`);
       await driver.executeScript("arguments[0].click();", el);
-      console.log("[extensions] Clicked Lusha minimize using JS click()");
     }
   };
 
-  // Try in main document first
-  try {
-    await clickEl();
-    return;
-  } catch (error) {
-    // fall through to iframe search
-  }
-
-  const frames = await driver.findElements(By.css("iframe"));
-  for (const frame of frames) {
+  const tryFastScriptClick = async () => {
     try {
-      const id = await frame.getAttribute("id");
-      if (id && id !== "LU__extension_iframe") {
-        continue;
+      const frames = await driver.findElements(By.css("iframe"));
+      for (const frame of frames) {
+        const id = await frame.getAttribute("id");
+        if (id && id !== "LU__extension_iframe") {
+          continue;
+        }
+        await driver.switchTo().frame(frame);
+        const clicked = await driver.executeScript(`
+          const btn = document.querySelector('.minimize-icon-container img[alt="Minimize"], .minimize-icon-container');
+          if (btn) {
+            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            return true;
+          }
+          return false;
+        `);
+        await driver.switchTo().defaultContent();
+        if (clicked) {
+          return true;
+        }
       }
-      await driver.switchTo().frame(frame);
-      await clickEl();
-      await driver.switchTo().defaultContent();
-      return;
     } catch (error) {
       try {
         await driver.switchTo().defaultContent();
@@ -47,6 +49,53 @@ const clickLushaMinimize = async (driver, timeoutMs = 15000) => {
         // ignore
       }
     }
+    return false;
+  };
+
+  const tryInFrame = async () => {
+    const frames = await driver.findElements(By.css("iframe"));
+    for (const frame of frames) {
+      try {
+        const id = await frame.getAttribute("id");
+        if (id && id !== "LU__extension_iframe") {
+          continue;
+        }
+        await driver.switchTo().frame(frame);
+        await clickEl();
+        await driver.switchTo().defaultContent();
+        return true;
+      } catch (error) {
+        try {
+          await driver.switchTo().defaultContent();
+        } catch (switchError) {
+          // ignore
+        }
+      }
+    }
+    return false;
+  };
+
+  if (preferFrame) {
+    const fast = await tryFastScriptClick();
+    if (fast) {
+      return;
+    }
+    const ok = await tryInFrame();
+    if (ok) {
+      return;
+    }
+  }
+
+  try {
+    await clickEl();
+    return;
+  } catch (error) {
+    // fall through to iframe search
+  }
+
+  const ok = await tryInFrame();
+  if (ok) {
+    return;
   }
   throw new Error("Lusha minimize button not found");
 };
