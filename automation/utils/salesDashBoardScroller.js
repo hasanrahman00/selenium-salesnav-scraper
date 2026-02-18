@@ -1,4 +1,4 @@
-const { By, waitForAnyVisible } = require("./dom");
+const { waitForAnyVisible } = require("./dom");
 
 const randInt = (min, max) => {
   const low = Math.ceil(min);
@@ -6,7 +6,7 @@ const randInt = (min, max) => {
   return Math.floor(Math.random() * (high - low + 1)) + low;
 };
 
-const salesDashBoardScroller = async (driver, opts = {}) => {
+const salesDashBoardScroller = async (page, opts = {}) => {
   const {
     trackerSelector = "a[data-control-name^='view_lead_panel']",
     scrollSelector = null,
@@ -20,10 +20,9 @@ const salesDashBoardScroller = async (driver, opts = {}) => {
     bottomStallLimit = 4,
   } = opts;
 
-  await waitForAnyVisible(driver, [By.css(trackerSelector)], timeoutMs);
+  await waitForAnyVisible(page, [trackerSelector], timeoutMs);
 
-  const result = await driver.executeScript(`
-    const cfg = arguments[0];
+  const result = await page.evaluate(async (cfg) => {
     const delay = (ms) => new Promise((res) => setTimeout(res, ms));
     const rand = (min, max) => Math.floor(min + Math.random() * (max - min + 1));
     let el = null;
@@ -63,7 +62,7 @@ const salesDashBoardScroller = async (driver, opts = {}) => {
       rounds += 1;
     }
     return 'scroll-max-rounds';
-  `, {
+  }, {
     scrollSelector,
     maxSteps,
     stepPx,
@@ -77,9 +76,9 @@ const salesDashBoardScroller = async (driver, opts = {}) => {
   return result;
 };
 
-const humanScrollSalesDashboard = async (driver, opts = {}) => {
+const humanScrollSalesDashboard = async (page, opts = {}) => {
   const steps = randInt(opts.minSteps || 7, opts.maxSteps || 10);
-  return salesDashBoardScroller(driver, {
+  return salesDashBoardScroller(page, {
     trackerSelector: opts.trackerSelector,
     scrollSelector: opts.scrollSelector,
     maxSteps: steps,

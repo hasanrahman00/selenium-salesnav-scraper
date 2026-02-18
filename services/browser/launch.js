@@ -1,55 +1,38 @@
-const fs = require("fs");
-const path = require("path");
-const { Builder } = require("selenium-webdriver");
-const chrome = require("selenium-webdriver/chrome");
-const { getExtensionPaths } = require("./extensions");
-const { applyStealth } = require("./stealth");
-const { profileDir } = require("../../config/paths");
+const { chromium } = require("playwright-core");
+const { CDP_URL } = require("../../config/browser");
 
-const launchBrowser = () => {
-  const options = new chrome.Options();
-  const extensions = getExtensionPaths();
-  const normalizedExtensions = extensions.map((extensionPath) =>
-    extensionPath.replace(/\\/g, "/")
-  );
-  const joined = normalizedExtensions.join(",");
-  fs.mkdirSync(profileDir, { recursive: true });
-  options.addArguments(`--user-data-dir=${profileDir}`);
-  options.addArguments("--profile-directory=Default");
-  options.addArguments(`--load-extension=${joined}`);
-  options.addArguments(
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-session-crashed-bubble",
-    "--disable-features=InfiniteSessionRestore",
-    "--log-level=3",
-    "--start-maximized",
-    "--disable-gpu",
-    "--use-gl=swiftshader",
-    "--use-angle=swiftshader",
-    "--disable-software-rasterizer",
-    "--disable-accelerated-2d-canvas",
-    "--disable-features=Vulkan,UseSkiaRenderer"
-  );
-  if (String(process.env.DEBUG_CHROME || "").toLowerCase() === "true") {
-    options.addArguments("--enable-logging=stderr", "--v=1");
+let browser = null;
+
+const connectBrowser = async () => {
+  if (browser && browser.isConnected()) {
+    return browser;
   }
-  if (process.env.CHROME_BINARY) {
-    options.setChromeBinaryPath(process.env.CHROME_BINARY);
+  browser = await chromium.connectOverCDP(CDP_URL);
+  return browser;
+};
+
+const getPage = async () => {
+  const b = await connectBrowser();
+  const contexts = b.contexts();
+  const context = contexts.length > 0 ? contexts[0] : await b.newContext();
+  const pages = context.pages();
+  const page = pages.length > 0 ? pages[0] : await context.newPage();
+  return { browser: b, context, page };
+};
+
+const disconnectBrowser = async () => {
+  if (browser) {
+    try {
+      browser.close();
+    } catch (error) {
+      // ignore disconnect errors
+    }
+    browser = null;
   }
-  applyStealth(options);
-  const headless = String(process.env.HEADLESS || "false").toLowerCase() === "true";
-  if (headless) {
-    options.addArguments("--headless=new");
-  }
-  const builder = new Builder().forBrowser("chrome").setChromeOptions(options);
-  if (process.env.CHROMEDRIVER_BINARY) {
-    const service = new chrome.ServiceBuilder(process.env.CHROMEDRIVER_BINARY);
-    builder.setChromeService(service);
-  }
-  return builder.build();
 };
 
 module.exports = {
-  launchBrowser,
+  connectBrowser,
+  getPage,
+  disconnectBrowser,
 };

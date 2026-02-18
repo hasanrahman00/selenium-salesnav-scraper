@@ -1,7 +1,7 @@
-const { By, until, waitForAnyVisible, waitForSalesNavReady } = require("./dom");
+const { waitForAnyVisible, waitForSalesNavReady } = require("./dom");
 
-const getPageInfo = async (driver) => {
-  return driver.executeScript(`
+const getPageInfo = async (page) => {
+  return page.evaluate(() => {
     const url = window.location.href;
     let pageNumber = null;
     try {
@@ -27,11 +27,11 @@ const getPageInfo = async (driver) => {
       }
     }
     return { url, pageNumber };
-  `);
+  });
 };
 
-const getLeadListKey = async (driver) => {
-  return driver.executeScript(`
+const getLeadListKey = async (page) => {
+  return page.evaluate(() => {
     const selectors = [
       'a[data-control-name^="view_lead_panel"]',
       'div.search-results__result-item a',
@@ -49,49 +49,63 @@ const getLeadListKey = async (driver) => {
       }
     }
     return null;
-  `);
+  });
 };
 
-const clickNextPage = async (driver, { timeoutMs = 15000, expectedNext = null } = {}) => {
-  await waitForSalesNavReady(driver, timeoutMs);
-  const nextLocators = [
-    By.css("button[aria-label='Next'].artdeco-pagination__button--next"),
-    By.css("button.artdeco-pagination__button--next"),
-    By.xpath("//button[@aria-label='Next']"),
+const clickNextPage = async (page, { timeoutMs = 15000, expectedNext = null } = {}) => {
+  await waitForSalesNavReady(page, timeoutMs);
+  const nextSelectors = [
+    "button[aria-label='Next'].artdeco-pagination__button--next",
+    "button.artdeco-pagination__button--next",
+    "xpath=//button[@aria-label='Next']",
   ];
-  const nextBtn = await waitForAnyVisible(driver, nextLocators, timeoutMs);
+  const nextBtn = await waitForAnyVisible(page, nextSelectors, timeoutMs);
   const disabled = await nextBtn.getAttribute("disabled");
   const ariaDisabled = await nextBtn.getAttribute("aria-disabled");
   if (disabled !== null || String(ariaDisabled).toLowerCase() === "true") {
     return { moved: false, reason: "disabled" };
   }
-  const before = await getPageInfo(driver);
-  const beforeLeadKey = await getLeadListKey(driver).catch(() => null);
+  const before = await getPageInfo(page);
+  const beforeLeadKey = await getLeadListKey(page).catch(() => null);
   try {
     await nextBtn.click();
   } catch (error) {
-    await driver.executeScript("arguments[0].click();", nextBtn);
+    await nextBtn.click({ force: true });
   }
   try {
-    await driver.wait(async () => {
-      const after = await getPageInfo(driver);
-      return after.url !== before.url || after.pageNumber !== before.pageNumber;
-    }, timeoutMs);
+    const start = Date.now();
+    for (;;) {
+      const after = await getPageInfo(page);
+      if (after.url !== before.url || after.pageNumber !== before.pageNumber) {
+        break;
+      }
+      if (Date.now() - start > timeoutMs) {
+        return { moved: false, reason: "page-change-timeout" };
+      }
+      await page.waitForTimeout(200);
+    }
   } catch (error) {
     return { moved: false, reason: "page-change-timeout" };
   }
   if (beforeLeadKey) {
     try {
-      await driver.wait(async () => {
-        const key = await getLeadListKey(driver);
-        return key && key !== beforeLeadKey;
-      }, timeoutMs);
+      const start = Date.now();
+      for (;;) {
+        const key = await getLeadListKey(page);
+        if (key && key !== beforeLeadKey) {
+          break;
+        }
+        if (Date.now() - start > timeoutMs) {
+          return { moved: false, reason: "leadlist-timeout" };
+        }
+        await page.waitForTimeout(200);
+      }
     } catch (error) {
       return { moved: false, reason: "leadlist-timeout" };
     }
   }
-  await waitForSalesNavReady(driver, timeoutMs);
-  const after = await getPageInfo(driver);
+  await waitForSalesNavReady(page, timeoutMs);
+  const after = await getPageInfo(page);
   if (expectedNext && after.pageNumber && after.pageNumber !== expectedNext) {
     return { moved: false, reason: "page-mismatch", pageNumber: after.pageNumber };
   }

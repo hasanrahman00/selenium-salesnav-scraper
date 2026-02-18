@@ -8,10 +8,12 @@ const { extractLushaContacts } = require("../automation/lusha/extract");
 const { clickLushaMinimize, clickLushaBadge } = require("../automation/lusha/actions");
 const { clickContactoutBadge } = require("../automation/contactout/actions");
 const { extractContactoutData } = require("../automation/contactout/extract");
+const { extractSalesNavLeads } = require("../automation/salesNav/extract");
+const { cleanName } = require("../utils/nameCleaner");
 const { humanScrollSalesDashboard } = require("../automation/utils/salesDashBoardScroller");
 const { clickNextPage, getPageInfo, getLeadListKey } = require("../automation/utils/pagination");
-const { By, waitForAnyVisible, waitForSalesNavReady } = require("../automation/utils/dom");
-const { confirmLoginInNewTab } = require("./scraper/auth");
+const { waitForAnyVisible, waitForSalesNavReady } = require("../automation/utils/dom");
+const { disconnectBrowser } = require("./browser/launch");
 
 const intervals = new Map();
 const sessions = new Map();
@@ -29,7 +31,7 @@ const createCsvPath = (listName) => {
   return path.join(dataDir, `${safe}-${stamp}.csv`);
 };
 
-const csvHeader = "Page Number,Full Name,First Name,Last Name,Company Name,Title,Website,Website_one";
+const csvHeader = "Page Number,Full Name,First Name,Last Name,Title,Company Name,Person Address,LinkedIn URL,Website,Website_one";
 
 const escapeCsvValue = (value) => {
   const text = String(value ?? "");
@@ -46,142 +48,93 @@ const toCsvRow = (record) => {
     escapeCsvValue(record.fullName),
     escapeCsvValue(record.firstName),
     escapeCsvValue(record.lastName),
-    escapeCsvValue(record.companyName),
     escapeCsvValue(record.title || ""),
+    escapeCsvValue(record.companyName),
+    escapeCsvValue(record.location || ""),
+    escapeCsvValue(record.linkedInUrl || ""),
     escapeCsvValue(domains[0] || ""),
     escapeCsvValue(domains[1] || ""),
   ].join(",");
 };
 
-const mergeContactoutData = (records, contactoutRecords) => {
-  if (!Array.isArray(records) || !Array.isArray(contactoutRecords)) {
+const mergeDomains = (records, extensionRecords) => {
+  if (!Array.isArray(records) || !Array.isArray(extensionRecords)) {
     return records;
   }
-
-  for (const contactout of contactoutRecords) {
-    const coFirstName = String(contactout.fullName || "").split(/\s+/)[0]?.toLowerCase();
-    const coDomains = Array.isArray(contactout.domains) ? contactout.domains : [];
-
+  for (const ext of extensionRecords) {
+    const extRawName = String(ext.fullName || "");
+    const extCleaned = cleanName(extRawName);
+    const extFirstName = extCleaned.split(/\s+/)[0]?.toLowerCase();
+    const extDomains = Array.isArray(ext.domains) ? ext.domains : [];
+    if (!extFirstName || extDomains.length === 0) {
+      continue;
+    }
     for (const record of records) {
       if (!record) {
         continue;
       }
       const firstNameMatch =
-        coFirstName && record.firstName && record.firstName.toLowerCase() === coFirstName;
-      const companyMatch =
-        contactout.companyName &&
-        record.companyName &&
-        record.companyName.toLowerCase() === contactout.companyName.toLowerCase();
-
-      if (firstNameMatch || companyMatch) {
-        if (!record.title && contactout.title) {
-          record.title = contactout.title;
+        record.firstName && record.firstName.toLowerCase() === extFirstName;
+      if (firstNameMatch) {
+        if (!record.domains || record.domains.length === 0) {
+          record.domains = [...extDomains];
         }
-        if ((!record.domains || record.domains.length === 0) && coDomains.length) {
-          record.domains = [...coDomains];
-          record.website = coDomains.join(";");
-        }
+        break;
       }
     }
   }
   return records;
 };
 
-const hasLushaContacts = async (driver, timeoutMs = 1500) => {
-  const locators = [
-    By.css("[data-test-id='bulk-contact-container-with-data']"),
-    By.css(".bulk-contact-profile-container"),
+const hasLushaContacts = async (page, timeoutMs = 1500) => {
+  const selectors = [
+    "[data-test-id='bulk-contact-container-with-data']",
+    ".bulk-contact-profile-container",
   ];
   try {
-    await waitForAnyVisible(driver, locators, timeoutMs);
+    await waitForAnyVisible(page, selectors, timeoutMs);
     return true;
   } catch (error) {
     return false;
   }
 };
 
-const hasContactoutContacts = async (driver, timeoutMs = 1500) => {
-  const locators = [By.css("[data-testid='contact-information']")];
+const hasContactoutContacts = async (page, timeoutMs = 1500) => {
   try {
-    await waitForAnyVisible(driver, locators, timeoutMs);
+    await waitForAnyVisible(page, ["[data-testid='contact-information']"], timeoutMs);
     return true;
   } catch (error) {
     return false;
   }
 };
 
-const createAuthError = (name, message) => {
-  const error = new Error(`${name} cookie expired. ${message}`);
-  error.code = "AUTH_EXPIRED";
-  error.site = name;
-  return error;
-};
-
-const ensureExtensionAuth = async (driver, cookies, name) => {
-  if (!cookies) {
-    throw createAuthError(name, "cookies are missing.");
-  }
-  if (name === "Lusha") {
-    const lushaCheck = await confirmLoginInNewTab({
-      driver,
-      name: "Lusha",
-      baseUrl: "https://dashboard.lusha.com",
-      confirmUrl: "https://dashboard.lusha.com/dashboard",
-      cookies: cookies.lusha,
-    });
-    if (!lushaCheck.ok) {
-      throw createAuthError("Lusha", lushaCheck.message);
-    }
-    return;
-  }
-  const contactoutCheck = await confirmLoginInNewTab({
-    driver,
-    name: "ContactOut",
-    baseUrl: "https://contactout.com",
-    confirmUrl: "https://contactout.com/lists",
-    cookies: cookies.contactout,
-  });
-  if (!contactoutCheck.ok) {
-    throw createAuthError("ContactOut", contactoutCheck.message);
-  }
-};
-
-const detectLushaLoginPanel = async (driver, timeoutMs = 1200) => {
-  const frames = await driver.findElements(By.css("iframe"));
-  for (const frame of frames) {
+const detectLushaLoginPanel = async (page) => {
+  for (const frame of page.frames()) {
     try {
-      const id = await frame.getAttribute("id");
-      if (id && id !== "LU__extension_iframe") {
+      const name = frame.name() || "";
+      if (name && name !== "LU__extension_iframe") {
         continue;
       }
-      await driver.switchTo().frame(frame);
-      const found = await driver.executeScript(`
+      const found = await frame.evaluate(() => {
         const root = document.querySelector('#root');
         const loginBtn = document.querySelector('.login-btn, .lusha-login button');
         const loginText = document.querySelector('.lusha-login');
         return Boolean(root && (loginBtn || loginText));
-      `);
-      await driver.switchTo().defaultContent();
+      });
       if (found) {
         return true;
       }
     } catch (error) {
-      try {
-        await driver.switchTo().defaultContent();
-      } catch (switchError) {
-        // ignore
-      }
+      // ignore
     }
   }
   return false;
 };
 
-const detectContactoutLoginPanel = async (driver, timeoutMs = 1200) => {
-  const frames = await driver.findElements(By.css("iframe"));
-  for (const frame of frames) {
+const detectContactoutLoginPanel = async (page) => {
+  for (const frame of page.frames()) {
     try {
-      await driver.switchTo().frame(frame);
-      const found = await driver.executeScript(`
+      const found = await frame.evaluate(() => {
         const root = document.querySelector('#root');
         const loginBtn = Array.from(document.querySelectorAll('button')).find((b) =>
           /login|sign up/i.test((b.textContent || ''))
@@ -191,150 +144,132 @@ const detectContactoutLoginPanel = async (driver, timeoutMs = 1200) => {
           /sign up/i.test(h.textContent || '')
         );
         return Boolean(root && (loginBtn || signupTitle) && headerLogo);
-      `);
-      await driver.switchTo().defaultContent();
+      });
       if (found) {
         return true;
       }
     } catch (error) {
-      try {
-        await driver.switchTo().defaultContent();
-      } catch (switchError) {
-        // ignore
-      }
+      // ignore
     }
   }
   return false;
 };
 
-const runPageExtraction = async ({ driver, job, filePath, pageIndex, total, cookies }) => {
+const runPageExtraction = async ({ page, job, filePath, pageIndex, total }) => {
   const extractDelayMs = Number(process.env.EXTRACT_DELAY_MS || 200);
   const timings = {
     preExtractMs: 0,
+    scrollMs: 0,
+    salesNavExtractMs: 0,
     lushaExtractMs: 0,
     lushaMinimizeMs: 0,
-    clickGapMs: 0,
     contactoutClickMs: 0,
-    contactoutDelayMs: 0,
     contactoutExtractMs: 0,
     csvWriteMs: 0,
   };
   const flowStart = Date.now();
-  if (extractDelayMs > 0 && driver) {
+
+  // 1. Pre-extraction delay
+  if (extractDelayMs > 0 && page) {
     const tPre = Date.now();
-    await driver.sleep(extractDelayMs);
+    await page.waitForTimeout(extractDelayMs);
     timings.preExtractMs = Date.now() - tPre;
   }
 
-  if (driver) {
+  // 2. Click Lusha badge to activate extension
+  if (page) {
     try {
-      await clickLushaBadge(driver, Number(process.env.LUSHA_BADGE_TIMEOUT_MS || 8000));
+      await clickLushaBadge(page, Number(process.env.LUSHA_BADGE_TIMEOUT_MS || 8000));
     } catch (error) {
-      // keep going; extraction will retry if container not visible
+      // keep going
     }
   }
-  const lushaStart = Date.now();
-  const records = driver
-    ? await extractLushaContacts(driver, { maxCards: 25, debug: true, retryOnTimeout: true })
-    : [];
-  timings.lushaExtractMs = Date.now() - lushaStart;
-  const lushaSeconds = (timings.lushaExtractMs / 1000).toFixed(2);
-  updateJob(job.id, { lushaSeconds: Number(lushaSeconds) });
 
+  // 3. Human scroll the dashboard
+  if (page) {
+    const tScroll = Date.now();
+    await humanScrollSalesDashboard(page, {
+      minSteps: Number(process.env.HUMAN_SCROLL_MIN_STEPS || 7),
+      maxSteps: Number(process.env.HUMAN_SCROLL_MAX_STEPS || 10),
+      stepPx: Number(process.env.HUMAN_SCROLL_STEP_PX || 200),
+      minDelayMs: Number(process.env.HUMAN_SCROLL_MIN_DELAY_MS || 200),
+      maxDelayMs: Number(process.env.HUMAN_SCROLL_MAX_DELAY_MS || 550),
+      timeoutMs: Number(process.env.HUMAN_SCROLL_TIMEOUT_MS || 15000),
+      maxRounds: Number(process.env.HUMAN_SCROLL_MAX_ROUNDS || 20),
+      bottomStallLimit: Number(process.env.HUMAN_SCROLL_BOTTOM_STALL_LIMIT || 4),
+    });
+    timings.scrollMs = Date.now() - tScroll;
+  }
+
+  // 4. Extract lead data from Sales Nav DOM
+  const tSalesNav = Date.now();
+  const records = page ? await extractSalesNavLeads(page) : [];
+  timings.salesNavExtractMs = Date.now() - tSalesNav;
+
+  // 5. Extract Lusha domains and merge by first name
+  let lushaSeconds = 0;
+  try {
+    if (page) {
+      const lushaVisible = await hasLushaContacts(page, 1200);
+      if (!lushaVisible) {
+        const lushaLogin = await detectLushaLoginPanel(page);
+        if (lushaLogin) {
+          throw new Error("Lusha login expired. Please re-login in your Chrome profile.");
+        }
+      }
+      const lushaStart = Date.now();
+      const lushaRecords = await extractLushaContacts(page, { maxCards: 25, debug: true, retryOnTimeout: true });
+      timings.lushaExtractMs = Date.now() - lushaStart;
+      lushaSeconds = Number((timings.lushaExtractMs / 1000).toFixed(2));
+      mergeDomains(records, lushaRecords);
+
+      // 6. Minimize Lusha
+      const tMin = Date.now();
+      await clickLushaMinimize(page, { timeoutMs: 1500, preferFrame: true });
+      timings.lushaMinimizeMs = Date.now() - tMin;
+    }
+  } catch (error) {
+    if (error && error.message && error.message.includes("login expired")) {
+      throw error;
+    }
+  }
+  updateJob(job.id, { lushaSeconds });
+
+  // 7. Click ContactOut badge and extract domains immediately
   let contactoutSeconds = 0;
   try {
-    if (driver) {
-      const lushaVisible = await hasLushaContacts(driver, 1200);
-      if (!lushaVisible) {
-        const lushaLogin = await detectLushaLoginPanel(driver, 1200);
-        if (lushaLogin) {
-          await ensureExtensionAuth(driver, cookies, "Lusha");
-          await driver.navigate().refresh();
-          await waitForSalesNavReady(driver).catch(() => null);
-          await clickLushaBadge(driver, Number(process.env.LUSHA_BADGE_TIMEOUT_MS || 8000));
-          const lushaVisibleRetry = await hasLushaContacts(driver, 2000);
-          if (!lushaVisibleRetry) {
-            throw new Error("Lusha contacts are not visible after re-auth.");
-          }
-        }
-      }
-      const tMin = Date.now();
-      await clickLushaMinimize(driver, { timeoutMs: 1500, preferFrame: true });
-      timings.lushaMinimizeMs = Date.now() - tMin;
-      const clickGapMs = Number(process.env.CLICK_GAP_MS || 300);
-      if (clickGapMs > 0) {
-        const tGap = Date.now();
-        await driver.sleep(clickGapMs);
-        timings.clickGapMs = Date.now() - tGap;
-      }
+    if (page) {
       const tClick = Date.now();
-      await clickContactoutBadge(driver, {
+      await clickContactoutBadge(page, {
         timeoutMs: Number(process.env.CONTACTOUT_CLICK_TIMEOUT_MS || 4000),
         skipReadyWait: true,
-        perFrameWaitMs: Number(process.env.CONTACTOUT_FRAME_WAIT_MS || 250),
-        mainDocWaitMs: Number(process.env.CONTACTOUT_MAIN_WAIT_MS || 600),
-        postMinimizeDelayMs: Number(process.env.CONTACTOUT_MINIMIZE_DELAY_MS || 150),
+        perFrameWaitMs: Number(process.env.CONTACTOUT_FRAME_WAIT_MS || 150),
+        mainDocWaitMs: Number(process.env.CONTACTOUT_MAIN_WAIT_MS || 300),
+        postMinimizeDelayMs: Number(process.env.CONTACTOUT_MINIMIZE_DELAY_MS || 50),
         maxFrames: Number(process.env.CONTACTOUT_MAX_FRAMES || 6),
       });
-      const contactoutVisible = await hasContactoutContacts(driver, 1200);
-      if (!contactoutVisible) {
-        const contactoutLogin = await detectContactoutLoginPanel(driver, 1200);
-        if (contactoutLogin) {
-          await ensureExtensionAuth(driver, cookies, "ContactOut");
-          await driver.navigate().refresh();
-          await waitForSalesNavReady(driver).catch(() => null);
-          await clickContactoutBadge(driver, {
-            timeoutMs: Number(process.env.CONTACTOUT_CLICK_TIMEOUT_MS || 4000),
-            skipReadyWait: true,
-            perFrameWaitMs: Number(process.env.CONTACTOUT_FRAME_WAIT_MS || 250),
-            mainDocWaitMs: Number(process.env.CONTACTOUT_MAIN_WAIT_MS || 600),
-            postMinimizeDelayMs: Number(process.env.CONTACTOUT_MINIMIZE_DELAY_MS || 150),
-            maxFrames: Number(process.env.CONTACTOUT_MAX_FRAMES || 6),
-          });
-          const contactoutVisibleRetry = await hasContactoutContacts(driver, 2000);
-          if (!contactoutVisibleRetry) {
-            throw new Error("ContactOut contacts are not visible after re-auth.");
-          }
-        }
-      }
       timings.contactoutClickMs = Date.now() - tClick;
-      const contactoutDelayMs = Number(process.env.CONTACTOUT_DELAY_MS || 200);
-      if (contactoutDelayMs > 0) {
-        const tDelay = Date.now();
-        await driver.sleep(contactoutDelayMs);
-        timings.contactoutDelayMs = Date.now() - tDelay;
-      }
-      const expectedLeadKey = await getLeadListKey(driver).catch(() => null);
+      const expectedLeadKey = await getLeadListKey(page).catch(() => null);
       const contactoutStart = Date.now();
-      const contactoutData = await extractContactoutData(driver, {
+      const contactoutData = await extractContactoutData(page, {
         timeoutMs: Number(process.env.CONTACTOUT_TIMEOUT_MS || 10000),
         debug: true,
         minResults: 1,
-        retryDelayMs: Number(process.env.CONTACTOUT_RETRY_DELAY_MS || 800),
+        retryDelayMs: Number(process.env.CONTACTOUT_RETRY_DELAY_MS || 500),
         maxRetries: Number(process.env.CONTACTOUT_MAX_RETRIES || 2),
         expectedLeadKey,
       }).catch(() => []);
       timings.contactoutExtractMs = Date.now() - contactoutStart;
       contactoutSeconds = Number((timings.contactoutExtractMs / 1000).toFixed(2));
-      mergeContactoutData(records, contactoutData);
-      await humanScrollSalesDashboard(driver, {
-        minSteps: Number(process.env.HUMAN_SCROLL_MIN_STEPS || 7),
-        maxSteps: Number(process.env.HUMAN_SCROLL_MAX_STEPS || 10),
-        stepPx: Number(process.env.HUMAN_SCROLL_STEP_PX || 200),
-        minDelayMs: Number(process.env.HUMAN_SCROLL_MIN_DELAY_MS || 200),
-        maxDelayMs: Number(process.env.HUMAN_SCROLL_MAX_DELAY_MS || 550),
-        timeoutMs: Number(process.env.HUMAN_SCROLL_TIMEOUT_MS || 15000),
-        maxRounds: Number(process.env.HUMAN_SCROLL_MAX_ROUNDS || 20),
-        bottomStallLimit: Number(process.env.HUMAN_SCROLL_BOTTOM_STALL_LIMIT || 4),
-      });
+      mergeDomains(records, contactoutData);
     }
   } catch (error) {
-    if (error && error.code === "AUTH_EXPIRED") {
+    if (error && error.message && error.message.includes("login expired")) {
       throw error;
     }
-    // keep extraction result even if ContactOut click fails
   }
 
+  // 8. Write all records to CSV
   let added = 0;
   const tCsv = Date.now();
   for (const record of records) {
@@ -344,11 +279,11 @@ const runPageExtraction = async ({ driver, job, filePath, pageIndex, total, cook
   }
   timings.csvWriteMs = Date.now() - tCsv;
 
-  const extractSeconds = Number((Number(lushaSeconds) + contactoutSeconds).toFixed(2));
+  const extractSeconds = Number((lushaSeconds + contactoutSeconds).toFixed(2));
   const flowSeconds = Number(((Date.now() - flowStart) / 1000).toFixed(2));
   const nextTotal = (total || 0) + added;
   updateJob(job.id, {
-    lushaSeconds: Number(lushaSeconds),
+    lushaSeconds,
     contactoutSeconds,
     extractSeconds,
     totalSeconds: flowSeconds,
@@ -356,43 +291,41 @@ const runPageExtraction = async ({ driver, job, filePath, pageIndex, total, cook
     pageIndex,
   });
   console.log(
-    `[timing][page:${pageIndex}] preExtract=${timings.preExtractMs}ms lushaExtract=${timings.lushaExtractMs}ms lushaMin=${timings.lushaMinimizeMs}ms clickGap=${timings.clickGapMs}ms contactoutClick=${timings.contactoutClickMs}ms contactoutDelay=${timings.contactoutDelayMs}ms contactoutExtract=${timings.contactoutExtractMs}ms total=${Math.round(flowSeconds * 1000)}ms`
+    `[timing][page:${pageIndex}] scroll=${timings.scrollMs}ms salesNav=${timings.salesNavExtractMs}ms lushaExtract=${timings.lushaExtractMs}ms lushaMin=${timings.lushaMinimizeMs}ms contactoutClick=${timings.contactoutClickMs}ms contactoutExtract=${timings.contactoutExtractMs}ms total=${Math.round(flowSeconds * 1000)}ms`
   );
   console.log(`[timing][page:${pageIndex}] csvWrite=${timings.csvWriteMs}ms rows=${added}`);
   return { added, total: nextTotal };
 };
 
-const runPaginatedExtraction = async ({ driver, job, filePath, initialTotal, cookies }) => {
+const runPaginatedExtraction = async ({ page, job, filePath, initialTotal }) => {
   let total = initialTotal || 0;
   let pageIndex = 1;
   const maxPagesEnv = process.env.MAX_PAGES;
   const maxPages = Number.isFinite(Number(maxPagesEnv)) ? Number(maxPagesEnv) : 100;
   let lastPageNumber = null;
-  if (driver) {
-    const info = await getPageInfo(driver).catch(() => null);
+  if (page) {
+    const info = await getPageInfo(page).catch(() => null);
     lastPageNumber = info?.pageNumber ?? null;
   }
   for (let i = 0; i < maxPages; i += 1) {
     let result;
     try {
-      result = await runPageExtraction({ driver, job, filePath, pageIndex, total, cookies });
+      result = await runPageExtraction({ page, job, filePath, pageIndex, total });
     } catch (error) {
       const message = String(error.message || error);
       updateJob(job.id, { status: "Failed", error: message });
-      if (driver) {
-        await driver.quit().catch(() => {});
-      }
+      await disconnectBrowser();
       return { total, failed: true, error: message };
     }
     total = result.total;
-    if (!driver) {
+    if (!page) {
       break;
     }
     console.log(`[pagination] page ${pageIndex} done, moving next...`);
     const expectedNext = lastPageNumber ? lastPageNumber + 1 : null;
     let next;
     try {
-      next = await clickNextPage(driver, {
+      next = await clickNextPage(page, {
         timeoutMs: Number(process.env.NEXT_PAGE_TIMEOUT_MS || 15000),
         expectedNext,
       });
@@ -438,13 +371,12 @@ const startJob = async ({ listName, listUrl }) => {
     throw error;
   }
   const session = sessions.get(job.id);
-  const driver = session?.driver;
+  const page = session?.page;
   const result = await runPaginatedExtraction({
-    driver,
+    page,
     job,
     filePath,
     initialTotal: 0,
-    cookies: session?.cookies,
   });
   updateJob(job.id, { total: result.total });
   if (result.failed) {
@@ -475,13 +407,12 @@ const resumeJob = async (id) => {
     throw error;
   }
   const session = sessions.get(job.id);
-  const driver = session?.driver;
+  const page = session?.page;
   const result = await runPaginatedExtraction({
-    driver,
+    page,
     job,
     filePath: job.filePath,
     initialTotal: job.total || 0,
-    cookies: session?.cookies,
   });
   updateJob(job.id, { total: result.total });
   if (result.failed) {

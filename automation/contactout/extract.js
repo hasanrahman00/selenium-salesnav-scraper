@@ -1,174 +1,101 @@
 const freeEmailDomains = require("free-email-domains");
-const { By, waitForAnyVisible } = require("../utils/dom");
-
-const withFrame = async (driver, frameEl, fn) => {
-  await driver.switchTo().frame(frameEl);
-  try {
-    return await fn();
-  } finally {
-    await driver.switchTo().defaultContent();
-  }
-};
-
-const getContactoutFrame = async (driver) => {
-  const frames = await driver.findElements(By.css("iframe"));
-  for (const frame of frames) {
-    try {
-      const src = await frame.getAttribute("src");
-      const id = await frame.getAttribute("id");
-      if ((src && src.includes("contactout")) || id === "contactout-iframe") {
-        return frame;
-      }
-    } catch (error) {
-      // ignore
-    }
-  }
-  return null;
-};
 
 const extractDomainsFromText = (text) => {
-  if (!text) {
-    return [];
-  }
+  if (!text) return [];
   const matches = String(text).match(/@([a-z0-9.-]+\.[a-z]{2,})/gi) || [];
   const domains = matches.map((m) => m.replace(/^@/, "").toLowerCase());
   const filtered = domains.filter((domain) => !freeEmailDomains.includes(domain));
   return Array.from(new Set(filtered));
 };
 
-const extractContactoutData = async (
-  driver,
-  {
-    timeoutMs = 30000,
-    debug = true,
-    minResults = 1,
-    retryDelayMs = 800,
-    maxRetries = 2,
-    expectedLeadKey = null,
-  } = {}
-) => {
-  const t0 = Date.now();
-  if (debug) {
-    console.log(`[contactout] start (timeout=${timeoutMs}ms)`);
-  }
-  const run = async () => {
-    const tVisible = Date.now();
-    await waitForAnyVisible(
-      driver,
-      [By.css("[data-testid='contact-information']")],
-      timeoutMs
-    );
-    if (debug) {
-      console.log(`[contactout] waitForAnyVisible ${Date.now() - tVisible}ms`);
-    }
-
-    const tScript = Date.now();
-    const raw = await driver.executeScript(`
-      const containers = Array.from(document.querySelectorAll('[data-testid="contact-information"]'));
-      return containers.map((container) => {
-        const nameEl = container.querySelector('.css-72nh78');
-        const titleEl = container.querySelector('.css-oq7ggv');
-        const fullName = nameEl ? nameEl.textContent.trim() : '';
-        const titleText = titleEl ? titleEl.textContent.trim() : '';
-        const spans = Array.from(container.querySelectorAll('[data-testid="contact-row-container"] span'));
-        const emails = spans.map((span) => (span.textContent || '').trim()).filter(Boolean);
-        return { fullName, titleText, emails };
-      });
-    `);
-    if (debug) {
-      console.log(`[contactout] executeScript ${Date.now() - tScript}ms`);
-    }
-
-    const tMap = Date.now();
-    const mapped = raw.map((record) => {
-      const titleParts = String(record.titleText || "").split(" at ");
-      const title = titleParts[0]?.trim() || "";
-      const companyName = titleParts.slice(1).join(" at ").trim();
-      const domains = [];
-      for (const emailText of record.emails || []) {
-        const extracted = extractDomainsFromText(emailText);
-        for (const d of extracted) {
-          if (!domains.includes(d)) {
-            domains.push(d);
-          }
-        }
-      }
-      return {
-        fullName: record.fullName,
-        title,
-        companyName,
-        domains: domains.slice(0, 2),
-      };
+const runExtract = async (target) => {
+  const raw = await target.evaluate(() => {
+    const containers = Array.from(document.querySelectorAll('[data-testid="contact-information"]'));
+    return containers.map((container) => {
+      const nameEl = container.querySelector('.css-72nh78');
+      const titleEl = container.querySelector('.css-oq7ggv');
+      const fullName = nameEl ? nameEl.textContent.trim() : '';
+      const titleText = titleEl ? titleEl.textContent.trim() : '';
+      const spans = Array.from(container.querySelectorAll('[data-testid="contact-row-container"] span'));
+      const emails = spans.map((span) => (span.textContent || '').trim()).filter(Boolean);
+      return { fullName, titleText, emails };
     });
-    if (debug) {
-      console.log(`[contactout] mapRecords ${Date.now() - tMap}ms`);
-    }
-    return mapped;
-  };
-
-  const normalizeKey = (value) => String(value || "").toLowerCase();
-  const executeWithRetry = async (fn, frameLabel) => {
-    let attempt = 0;
-    let result = await fn();
-    const hasData = (list) =>
-      Array.isArray(list) &&
-      list.length >= minResults &&
-      list.some((item) => (item.fullName || '').trim() || (item.domains || []).length);
-    const matchesExpected = (list) => {
-      if (!expectedLeadKey) {
-        return true;
+  });
+  return raw.map((record) => {
+    const titleParts = String(record.titleText || "").split(" at ");
+    const title = titleParts[0]?.trim() || "";
+    const companyName = titleParts.slice(1).join(" at ").trim();
+    const domains = [];
+    for (const emailText of record.emails || []) {
+      for (const d of extractDomainsFromText(emailText)) {
+        if (!domains.includes(d)) domains.push(d);
       }
-      if (!Array.isArray(list) || !list.length) {
-        return false;
-      }
-      const first = list[0];
-      const name = normalizeKey(first.fullName || "");
-      const key = normalizeKey(expectedLeadKey);
-      return Boolean(name) && key.includes(name.split(" ")[0]);
-    };
-    while ((!hasData(result) || !matchesExpected(result)) && attempt < maxRetries) {
-      attempt += 1;
-      if (debug) {
-        console.log(`[contactout] retry ${attempt} (no data or mismatch)`);
-      }
-      await driver.sleep(retryDelayMs);
-      result = await fn();
     }
-    if (debug) {
-      console.log(`[contactout] total ${Date.now() - t0}ms (frame=${frameLabel})`);
-    }
-    return result;
-  };
+    return { fullName: record.fullName, title, companyName, domains: domains.slice(0, 2) };
+  });
+};
 
-  const frame = await getContactoutFrame(driver);
-  if (frame) {
-    const tFrame = Date.now();
-    const result = await executeWithRetry(() => withFrame(driver, frame, run), "yes");
-    if (debug) {
-      console.log(`[contactout] switch=${Date.now() - tFrame}ms`);
-    }
-    return result;
-  }
-
-  const frames = await driver.findElements(By.css("iframe"));
-  for (const candidate of frames) {
+const waitForData = async (target, timeoutMs) => {
+  const start = Date.now();
+  for (;;) {
     try {
-      const tFrame = Date.now();
-      const result = await executeWithRetry(() => withFrame(driver, candidate, run), "scan");
-      if (Array.isArray(result) && result.length) {
-        if (debug) {
-          console.log(`[contactout] switch=${Date.now() - tFrame}ms`);
-        }
+      const count = await target.locator('[data-testid="contact-information"]').count();
+      if (count > 0) return true;
+    } catch (error) {
+      // ignore
+    }
+    if (Date.now() - start > timeoutMs) return false;
+    await target.waitForTimeout(80);
+  }
+};
+
+const extractContactoutData = async (page, opts = {}) => {
+  const timeoutMs = Number(opts.timeoutMs || 10000);
+  const maxRetries = Number(opts.maxRetries || 2);
+  const retryDelayMs = Number(opts.retryDelayMs || 500);
+  const debug = opts.debug !== false;
+  const t0 = Date.now();
+
+  // Find contactout frames first (data is in iframe)
+  const frames = page.frames();
+  const contactoutFrames = frames.filter((f) => {
+    const url = f.url() || "";
+    const name = f.name() || "";
+    return url.includes("contactout") || name.includes("contactout");
+  });
+
+  // Try contactout frames, then all frames, then main page
+  const targets = [...contactoutFrames, ...frames.filter((f) => !contactoutFrames.includes(f)), page];
+
+  for (const target of targets) {
+    try {
+      const found = await waitForData(target, Math.min(timeoutMs, 2000));
+      if (!found) continue;
+
+      let result = await runExtract(target);
+      let attempt = 0;
+      const hasData = (list) =>
+        Array.isArray(list) && list.length > 0 &&
+        list.some((item) => (item.fullName || '').trim() || (item.domains || []).length);
+
+      while (!hasData(result) && attempt < maxRetries) {
+        attempt += 1;
+        if (debug) console.log(`[contactout] retry ${attempt}`);
+        await page.waitForTimeout(retryDelayMs);
+        result = await runExtract(target);
+      }
+
+      if (hasData(result)) {
+        if (debug) console.log(`[contactout] extracted ${result.length} records in ${Date.now() - t0}ms`);
         return result;
       }
     } catch (error) {
-      // ignore and continue
+      // continue to next target
     }
   }
 
-  return executeWithRetry(run, "no");
+  if (debug) console.log(`[contactout] no data found in ${Date.now() - t0}ms`);
+  return [];
 };
 
-module.exports = {
-  extractContactoutData,
-};
+module.exports = { extractContactoutData };

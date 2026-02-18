@@ -1,14 +1,5 @@
-const { By, until, waitForAnyVisible, waitForSalesNavReady } = require("../utils/dom");
+const { waitForAnyVisible, waitForSalesNavReady } = require("../utils/dom");
 const { clickLushaBadge } = require("./actions");
-
-const withFrame = async (driver, frameEl, fn) => {
-  await driver.switchTo().frame(frameEl);
-  try {
-    return await fn();
-  } finally {
-    await driver.switchTo().defaultContent();
-  }
-};
 
 const splitName = (fullName) => {
   const cleaned = String(fullName || "").trim();
@@ -33,23 +24,15 @@ const extractDomains = (text) => {
   return Array.from(new Set(matches.map((m) => m.replace(/^@/, "").toLowerCase())));
 };
 
-const getLushaFrame = async (driver) => {
-  const frames = await driver.findElements(By.css("iframe"));
-  for (const frame of frames) {
-    try {
-      const id = await frame.getAttribute("id");
-      if (id === "LU__extension_iframe") {
-        return frame;
-      }
-    } catch (error) {
-      // ignore
-    }
-  }
-  return null;
+const getLushaFrame = (page) => {
+  return page.frames().find((f) => {
+    const url = f.url() || "";
+    return f.name() === "LU__extension_iframe" || url.includes("lusha");
+  }) || null;
 };
 
-const expandAllCards = async (driver) => {
-  await driver.executeScript(`
+const expandAllCards = async (target) => {
+  await target.evaluate(() => {
     const arrows = Array.from(document.querySelectorAll(
       '.divider-and-arrow-container img[alt="Arrow Down"], .divider-and-arrow-container'
     ));
@@ -59,11 +42,11 @@ const expandAllCards = async (driver) => {
         clickable.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       }
     });
-  `);
+  });
 };
 
 const extractLushaContacts = async (
-  driver,
+  page,
   { timeoutMs = 20000, maxCards = 25, debug = true, retryOnTimeout = true } = {}
 ) => {
   const t0 = Date.now();
@@ -71,31 +54,26 @@ const extractLushaContacts = async (
     console.log(`[lusha] start (timeout=${timeoutMs}ms, maxCards=${maxCards})`);
   }
   const tReadyStart = Date.now();
-  await waitForSalesNavReady(driver, timeoutMs);
+  await waitForSalesNavReady(page, timeoutMs);
   if (debug) {
     console.log(`[lusha] waitForSalesNavReady ${Date.now() - tReadyStart}ms`);
   }
 
-  const run = async () => {
-    const containerLocators = [
-      By.css("[data-test-id='bulk-contact-container-with-data']"),
-      By.css(".bulk-contact-profile-container"),
+  const run = async (target) => {
+    const containerSelectors = [
+      "[data-test-id='bulk-contact-container-with-data']",
+      ".bulk-contact-profile-container",
     ];
     const tVisible = Date.now();
     try {
-      await waitForAnyVisible(driver, containerLocators, timeoutMs);
+      await waitForAnyVisible(target, containerSelectors, timeoutMs);
     } catch (error) {
       if (retryOnTimeout) {
         if (debug) {
           console.log("[lusha] container not visible, retrying by clicking Lusha badge");
         }
-        try {
-          await driver.switchTo().defaultContent();
-        } catch (switchError) {
-          // ignore
-        }
-        await clickLushaBadge(driver, Math.min(8000, timeoutMs));
-        await waitForAnyVisible(driver, containerLocators, timeoutMs);
+        await clickLushaBadge(page, Math.min(8000, timeoutMs));
+        await waitForAnyVisible(target, containerSelectors, timeoutMs);
       } else {
         throw error;
       }
@@ -104,15 +82,15 @@ const extractLushaContacts = async (
       console.log(`[lusha] waitForAnyVisible ${Date.now() - tVisible}ms`);
     }
     const tExpand = Date.now();
-    await expandAllCards(driver);
-    await driver.sleep(150);
+    await expandAllCards(target);
+    await page.waitForTimeout(150);
     if (debug) {
       console.log(`[lusha] expandAllCards ${Date.now() - tExpand}ms`);
     }
     const tScript = Date.now();
-    const raw = await driver.executeScript(`
+    const raw = await target.evaluate((mc) => {
       const cards = Array.from(document.querySelectorAll('.bulk-contact-profile-container'));
-      return cards.slice(0, ${maxCards}).map((card) => {
+      return cards.slice(0, mc).map((card) => {
         const fullNameEl = card.querySelector('.bulk-contact-full-name');
         const companyEl = card.querySelector('.bulk-contact-company-name');
         const fullName = fullNameEl ? fullNameEl.textContent.trim() : '';
@@ -123,9 +101,9 @@ const extractLushaContacts = async (
           .filter(Boolean);
         return { fullName, companyName, domains };
       });
-    `);
+    }, maxCards);
     if (debug) {
-      console.log(`[lusha] executeScript ${Date.now() - tScript}ms`);
+      console.log(`[lusha] evaluate ${Date.now() - tScript}ms`);
     }
 
     const tMap = Date.now();
@@ -155,9 +133,9 @@ const extractLushaContacts = async (
     return mapped;
   };
 
-  const lushaFrame = await getLushaFrame(driver);
+  const lushaFrame = getLushaFrame(page);
   const tFrame = Date.now();
-  const result = lushaFrame ? await withFrame(driver, lushaFrame, run) : await run();
+  const result = lushaFrame ? await run(lushaFrame) : await run(page);
   if (debug) {
     console.log(`[lusha] total ${Date.now() - t0}ms (frame=${lushaFrame ? "yes" : "no"}, switch=${Date.now() - tFrame}ms)`);
   }

@@ -2,18 +2,8 @@ const express = require("express");
 const path = require("path");
 const routes = require("./routes");
 const { publicDir } = require("./config/paths");
-const { ensureJsonFile } = require("./utils/jsonFile");
-const {
-  cookiesFile,
-  contactoutCookiesFile,
-  lushaCookiesFile,
-} = require("./config/paths");
 
 const app = express();
-
-ensureJsonFile(cookiesFile, []);
-ensureJsonFile(contactoutCookiesFile, []);
-ensureJsonFile(lushaCookiesFile, []);
 
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));

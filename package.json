@@ -5,14 +5,13 @@
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
-    "start": "set \"CHROME_BINARY=%CD%\\chrome-for-testing\\chrome-win64\\chrome.exe\" && node server.js",
+    "start": "node server.js",
     "dev": "nodemon server.js"
   },
   "dependencies": {
     "express": "^4.19.2",
     "free-email-domains": "^1.2.23",
-    "selenium-webdriver": "^4.22.0",
-    "unzipper": "^0.12.3",
+    "playwright-core": "^1.48.0",
     "uuid": "^9.0.1"
   },
   "devDependencies": {

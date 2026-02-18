@@ -1,12 +1,7 @@
 const state = {
-  cookiesSaved: false,
   jobs: [],
 };
 
-const cookiesInput = document.getElementById("cookiesInput");
-const cookiesSave = document.getElementById("cookiesSave");
-const cookiesValidate = document.getElementById("cookiesValidate");
-const cookiesError = document.getElementById("cookiesError");
 const listName = document.getElementById("listName");
 const listUrl = document.getElementById("listUrl");
 const listNameError = document.getElementById("listNameError");
@@ -14,6 +9,10 @@ const listUrlError = document.getElementById("listUrlError");
 const runScraper = document.getElementById("runScraper");
 const jobsBody = document.getElementById("jobsBody");
 const toast = document.getElementById("toast");
+const statTotal = document.getElementById("statTotal");
+const statRunning = document.getElementById("statRunning");
+const statCompleted = document.getElementById("statCompleted");
+const statFailed = document.getElementById("statFailed");
 const notifiedFailures = new Set();
 
 const showToast = (message) => {
@@ -24,7 +23,7 @@ const showToast = (message) => {
 
 const formatSeconds = (value) => {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return "—";
+    return "\u2014";
   }
   return Number(value).toFixed(2);
 };
@@ -32,7 +31,7 @@ const formatSeconds = (value) => {
 const updateRunDisabled = (loading = false) => {
   const hasName = Boolean(listName.value.trim());
   const hasUrl = Boolean(listUrl.value.trim());
-  const disabled = loading || !state.cookiesSaved || !hasName || !hasUrl;
+  const disabled = loading || !hasName || !hasUrl;
   runScraper.disabled = disabled;
 };
 
@@ -40,7 +39,7 @@ const setButtonLoading = (loading) => {
   const spinner = runScraper.querySelector(".spinner");
   const text = runScraper.querySelector(".btn-text");
   spinner.hidden = !loading;
-  text.textContent = loading ? "Starting…" : "Run Scraper";
+  text.textContent = loading ? "Starting\u2026" : "Run Scraper";
   updateRunDisabled(loading);
 };
 
@@ -67,43 +66,69 @@ const validateInputs = () => {
   return valid;
 };
 
+const updateStats = () => {
+  const jobs = state.jobs;
+  statTotal.textContent = jobs.length;
+  statRunning.textContent = jobs.filter((j) => j.status === "Running").length;
+  statCompleted.textContent = jobs.filter((j) => j.status === "Completed").length;
+  statFailed.textContent = jobs.filter((j) => j.status === "Failed").length;
+};
+
+const icons = {
+  play: '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4 2.5l7 4.5-7 4.5V2.5z" fill="currentColor"/></svg>',
+  pause: '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="3" y="2" width="3" height="10" rx="1" fill="currentColor"/><rect x="8" y="2" width="3" height="10" rx="1" fill="currentColor"/></svg>',
+  download: '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v7M4 7l3 3 3-3M3 12h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  trash: '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 4h9M5 4V3a1 1 0 011-1h2a1 1 0 011 1v1M4 4v7.5a1 1 0 001 1h4a1 1 0 001-1V4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
+
 const renderJobs = () => {
   jobsBody.innerHTML = "";
   if (state.jobs.length === 0) {
     jobsBody.innerHTML = `
       <tr class="empty-row">
-        <td colspan="4">
+        <td colspan="8">
           <div class="empty-state">
-            <span>🗂️</span>
-            <p>No jobs yet. Create one above.</p>
+            <div class="empty-icon">
+              <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
+                <rect x="8" y="14" width="40" height="28" rx="4" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M16 24h24M16 30h16M16 36h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <circle cx="42" cy="36" r="3" stroke="currentColor" stroke-width="1.5"/>
+              </svg>
+            </div>
+            <p>No jobs yet</p>
+            <span>Create a new job above to get started</span>
           </div>
         </td>
       </tr>
     `;
+    updateStats();
     return;
   }
   state.jobs.forEach((job) => {
     const badgeClass = job.status.toLowerCase();
+    const isRunning = job.status === "Running";
+    const toggleIcon = isRunning ? icons.pause : icons.play;
+    const toggleLabel = isRunning ? "Pause" : "Run";
     const row = document.createElement("tr");
     row.innerHTML = `
       <td><strong>${job.name}</strong></td>
-      <td class="right">${job.total}</td>
-      <td>${formatSeconds(job.lushaSeconds)}</td>
-      <td>${formatSeconds(job.contactoutSeconds)}</td>
-      <td>${formatSeconds(job.extractSeconds)}</td>
-      <td>${formatSeconds(job.totalSeconds)}</td>
+      <td class="right mono">${job.total}</td>
+      <td class="mono">${formatSeconds(job.lushaSeconds)}</td>
+      <td class="mono">${formatSeconds(job.contactoutSeconds)}</td>
+      <td class="mono">${formatSeconds(job.extractSeconds)}</td>
+      <td class="mono">${formatSeconds(job.totalSeconds)}</td>
       <td><span class="badge ${badgeClass}">${job.status}</span></td>
       <td class="actions">
         <button class="btn ghost" data-action="toggle" data-id="${job.id}">
-          ${job.status === "Running" ? "Pause" : "Run"}
+          ${toggleIcon} ${toggleLabel}
         </button>
         <button class="btn secondary" data-action="download" data-id="${job.id}" ${
           job.total === 0 ? "disabled" : ""
         }>
-          Download
+          ${icons.download} Download
         </button>
         <button class="btn danger" data-action="delete" data-id="${job.id}">
-          Delete
+          ${icons.trash} Delete
         </button>
       </td>
     `;
@@ -113,53 +138,13 @@ const renderJobs = () => {
       notifiedFailures.add(job.id);
     }
   });
+  updateStats();
 };
 
 const fetchJobs = async () => {
   const res = await fetch("/api/jobs");
   state.jobs = await res.json();
   renderJobs();
-};
-
-const fetchCookieStatus = async () => {
-  const res = await fetch("/api/cookies/linkedin/status");
-  const data = await res.json();
-  state.cookiesSaved = Boolean(data.saved);
-  updateRunDisabled(false);
-};
-
-const saveCookies = async () => {
-  cookiesError.textContent = "";
-  cookiesInput.classList.remove("error-border");
-  try {
-    const res = await fetch("/api/cookies/linkedin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cookies: cookiesInput.value }),
-    });
-    if (!res.ok) {
-      const data = await res.json();
-      throw new Error(data.message || "Invalid JSON format");
-    }
-    state.cookiesSaved = true;
-    showToast("Cookies saved");
-    setButtonLoading(false);
-  } catch (error) {
-    cookiesError.textContent = error.message;
-    cookiesInput.classList.add("error-border");
-  }
-};
-
-const validateCookies = () => {
-  cookiesError.textContent = "";
-  cookiesInput.classList.remove("error-border");
-  try {
-    JSON.parse(cookiesInput.value);
-    showToast("Cookies look valid");
-  } catch (error) {
-    cookiesError.textContent = "Invalid JSON format";
-    cookiesInput.classList.add("error-border");
-  }
 };
 
 const runJob = async () => {
@@ -188,8 +173,8 @@ const runJob = async () => {
 };
 
 const handleAction = async (event) => {
-  const target = event.target;
-  if (!target.dataset.action) {
+  const target = event.target.closest("[data-action]");
+  if (!target) {
     return;
   }
   const id = target.dataset.id;
@@ -216,14 +201,11 @@ const handleAction = async (event) => {
   }
 };
 
-cookiesSave.addEventListener("click", saveCookies);
-cookiesValidate.addEventListener("click", validateCookies);
 runScraper.addEventListener("click", runJob);
 jobsBody.addEventListener("click", handleAction);
 listName.addEventListener("input", () => updateRunDisabled(false));
 listUrl.addEventListener("input", () => updateRunDisabled(false));
 
 setButtonLoading(false);
-fetchCookieStatus();
 fetchJobs();
 setInterval(fetchJobs, 4000);
