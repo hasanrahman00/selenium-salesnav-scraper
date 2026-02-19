@@ -8,10 +8,11 @@ const { extractLushaContacts } = require("../automation/lusha/extract");
 const { clickLushaMinimize, clickLushaBadge } = require("../automation/lusha/actions");
 const { clickContactoutBadge } = require("../automation/contactout/actions");
 const { extractContactoutData } = require("../automation/contactout/extract");
+const { minimizeContactout } = require("../automation/contactout/minimize");
 const { extractSalesNavLeads } = require("../automation/salesNav/extract");
 const { cleanName } = require("../utils/nameCleaner");
 const { humanScrollSalesDashboard } = require("../automation/utils/salesDashBoardScroller");
-const { clickNextPage, getPageInfo, getLeadListKey } = require("../automation/utils/pagination");
+const { clickNextPage, clickNextPageWithRetry, getPageInfo, getLeadListKey } = require("../automation/utils/pagination");
 const { waitForAnyVisible, waitForSalesNavReady } = require("../automation/utils/dom");
 const { disconnectBrowser } = require("./browser/launch");
 
@@ -262,11 +263,25 @@ const runPageExtraction = async ({ page, job, filePath, pageIndex, total }) => {
       timings.contactoutExtractMs = Date.now() - contactoutStart;
       contactoutSeconds = Number((timings.contactoutExtractMs / 1000).toFixed(2));
       mergeDomains(records, contactoutData);
+
+      // 7.5. Minimize ContactOut sidebar
+      try {
+        await minimizeContactout(page, { timeoutMs: 2000 });
+      } catch (error) {
+        // non-critical, continue
+      }
     }
   } catch (error) {
     if (error && error.message && error.message.includes("login expired")) {
       throw error;
     }
+  }
+
+  // 7.6. Random sleep 2-3 seconds before pagination
+  if (page) {
+    const sleepMs = 2000 + Math.random() * 1000;
+    console.log(`[flow] sleeping ${Math.round(sleepMs)}ms before pagination`);
+    await page.waitForTimeout(sleepMs);
   }
 
   // 8. Write all records to CSV
@@ -308,6 +323,13 @@ const runPaginatedExtraction = async ({ page, job, filePath, initialTotal }) => 
     lastPageNumber = info?.pageNumber ?? null;
   }
   for (let i = 0; i < maxPages; i += 1) {
+    // Check if job was stopped
+    const currentJob = getJob(job.id);
+    if (currentJob && currentJob.status === "Stopped") {
+      console.log("[pagination] job stopped by user");
+      return { total, failed: false };
+    }
+
     let result;
     try {
       result = await runPageExtraction({ page, job, filePath, pageIndex, total });
@@ -323,34 +345,45 @@ const runPaginatedExtraction = async ({ page, job, filePath, initialTotal }) => 
     }
     console.log(`[pagination] page ${pageIndex} done, moving next...`);
     const expectedNext = lastPageNumber ? lastPageNumber + 1 : null;
-    let next;
-    try {
-      next = await clickNextPage(page, {
-        timeoutMs: Number(process.env.NEXT_PAGE_TIMEOUT_MS || 15000),
-        expectedNext,
-      });
-    } catch (error) {
-      const errorMessage = `Pagination failed: ${error.message || error}`;
-      updateJob(job.id, { status: "Failed", error: errorMessage });
-      return { total, failed: true, error: errorMessage };
-    }
+    const next = await clickNextPageWithRetry(page, {
+      timeoutMs: Number(process.env.NEXT_PAGE_TIMEOUT_MS || 15000),
+      expectedNext,
+      maxRetries: 3,
+    });
     if (!next.moved) {
       const reason = next.reason || "no-move";
       if (reason === "disabled") {
         console.log("[pagination] reached last page");
         break;
       }
-      const errorMessage = `Pagination stopped: ${reason}`;
+      // After all retries exhausted, log but don't crash
+      console.log(`[pagination] all retries exhausted: ${reason}`);
+      if (reason.includes("page-mismatch")) {
+        // Page mismatch after retries = data integrity risk, stop gracefully
+        const errorMessage = `Pagination stopped after retries: ${reason}`;
+        updateJob(job.id, { status: "Failed", error: errorMessage });
+        return { total, failed: true, error: errorMessage };
+      }
+      // For timeouts, try to continue from current position
+      console.log("[pagination] attempting to continue from current page state");
+      const currentInfo = await getPageInfo(page).catch(() => null);
+      if (currentInfo?.pageNumber && currentInfo.pageNumber > (lastPageNumber || 0)) {
+        lastPageNumber = currentInfo.pageNumber;
+        pageIndex += 1;
+        continue;
+      }
+      const errorMessage = `Pagination failed after 3 retries: ${reason}`;
       updateJob(job.id, { status: "Failed", error: errorMessage });
       return { total, failed: true, error: errorMessage };
     }
+    // Strict page tracking - only update on confirmed navigation
     if (next.pageNumber && lastPageNumber && next.pageNumber !== lastPageNumber + 1) {
-      console.log(`[pagination] page mismatch: expected ${lastPageNumber + 1}, got ${next.pageNumber}`);
+      console.log(`[pagination] page mismatch after move: expected ${lastPageNumber + 1}, got ${next.pageNumber}`);
       const errorMessage = `Pagination page mismatch: expected ${lastPageNumber + 1}, got ${next.pageNumber}`;
       updateJob(job.id, { status: "Failed", error: errorMessage });
       return { total, failed: true, error: errorMessage };
     }
-    lastPageNumber = next.pageNumber || lastPageNumber;
+    lastPageNumber = next.pageNumber || (lastPageNumber ? lastPageNumber + 1 : null);
     pageIndex += 1;
   }
   if (maxPagesEnv && pageIndex > maxPages) {

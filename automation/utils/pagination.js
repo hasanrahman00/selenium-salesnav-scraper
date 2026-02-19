@@ -112,8 +112,67 @@ const clickNextPage = async (page, { timeoutMs = 15000, expectedNext = null } = 
   return { moved: true, pageNumber: after.pageNumber };
 };
 
+const clickNextPageWithRetry = async (page, { timeoutMs = 15000, expectedNext = null, maxRetries = 3 } = {}) => {
+  let lastResult = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      const result = await clickNextPage(page, { timeoutMs, expectedNext });
+      if (result.moved) {
+        return result;
+      }
+      // disabled = last page, no retry needed
+      if (result.reason === "disabled") {
+        return result;
+      }
+      lastResult = result;
+      console.log(`[pagination] attempt ${attempt}/${maxRetries} failed: ${result.reason}`);
+
+      if (attempt < maxRetries) {
+        // Scroll pagination into view before retry
+        try {
+          await page.evaluate(() => {
+            const pag = document.querySelector(".artdeco-pagination");
+            if (pag) pag.scrollIntoView({ behavior: "smooth", block: "center" });
+          });
+        } catch (error) {
+          // ignore
+        }
+        const retryDelay = 1000 + Math.random() * 1000;
+        await page.waitForTimeout(retryDelay);
+
+        // On page-mismatch, try navigating via URL param
+        if (result.reason === "page-mismatch" && expectedNext) {
+          try {
+            const currentUrl = page.url();
+            const url = new URL(currentUrl);
+            url.searchParams.set("page", String(expectedNext));
+            console.log(`[pagination] retry via URL navigation to page ${expectedNext}`);
+            await page.goto(url.toString(), { waitUntil: "domcontentloaded", timeout: timeoutMs });
+            await waitForSalesNavReady(page, timeoutMs);
+            const info = await getPageInfo(page);
+            if (info.pageNumber === expectedNext) {
+              return { moved: true, pageNumber: expectedNext };
+            }
+          } catch (error) {
+            console.log(`[pagination] URL navigation retry failed: ${error.message}`);
+          }
+        }
+      }
+    } catch (error) {
+      lastResult = { moved: false, reason: `error: ${error.message || error}` };
+      console.log(`[pagination] attempt ${attempt}/${maxRetries} error: ${error.message || error}`);
+      if (attempt < maxRetries) {
+        const retryDelay = 1000 + Math.random() * 1000;
+        await page.waitForTimeout(retryDelay);
+      }
+    }
+  }
+  return lastResult || { moved: false, reason: "max-retries-exhausted" };
+};
+
 module.exports = {
   getPageInfo,
   getLeadListKey,
   clickNextPage,
+  clickNextPageWithRetry,
 };
